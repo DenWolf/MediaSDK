@@ -3614,6 +3614,14 @@ Status TaskSupplier::AddSlice(H264Slice * pSlice, bool force)
                     if (umsRes != UMC_OK)
                         return umsRes;
                 }
+                else if (view.GetPOCDecoder(0)->DetectFrameNumGap(slice, true))
+                {
+                    // corruption recovery in case of frame gaps and gaps_in_frame_num_value_allowed_flag=false
+                    if (slice->GetSeqParam()->gaps_in_frame_num_value_allowed_flag != 1)
+                    {
+                        DPBSanitize(view.GetDPBList(0)->head(), slice);
+                    }
+                }
             }
 
             m_accessUnit.m_isInitialized = true;
@@ -3658,14 +3666,6 @@ Status TaskSupplier::AddSlice(H264Slice * pSlice, bool force)
             m_currentView = lastSlice->GetSliceHeader()->nal_ext.mvc.view_id;
             ViewItem &view = GetView(m_currentView);
             view.pCurFrame = setOfSlices->m_frame;
-
-            if (lastSlice->GetSeqParam()->gaps_in_frame_num_value_allowed_flag != 1)
-            {
-                // Check if DPB has ST frames with frame_num duplicating frame_num of new slice_type
-                // If so, unmark such frames as ST
-                H264DecoderFrame * pHead = view.GetDPBList(0)->head();
-                DPBSanitize(pHead, view.pCurFrame);
-            }
 
             const H264SliceHeader *sliceHeader = lastSlice->GetSliceHeader();
             uint32_t field_index = setOfSlices->m_frame->GetNumberByParity(sliceHeader->bottom_field_flag);
@@ -4019,13 +4019,13 @@ void TaskSupplier::AddSliceToFrame(H264DecoderFrame *pFrame, H264Slice *pSlice)
     au_info->AddSlice(pSlice);
 }
 
-void TaskSupplier::DPBSanitize(H264DecoderFrame * pDPBHead, const H264DecoderFrame * pFrame)
+void TaskSupplier::DPBSanitize(H264DecoderFrame * pDPBHead, const H264Slice *pSlice)
 {
+    // drop ST frames with frame_num higher than frame_num of the input slice
     for (H264DecoderFrame *pFrm = pDPBHead; pFrm; pFrm = pFrm->future())
     {
-        if ((pFrm != pFrame) &&
-            (pFrm->FrameNum() == pFrame->FrameNum()) &&
-             pFrm->isShortTermRef())
+        if ((pFrm->FrameNum() > pSlice->GetSliceHeader()->frame_num) &&
+            pFrm->isShortTermRef())
         {
             AddItemAndRun(pFrm, pFrm, UNSET_REFERENCE | FULL_FRAME | SHORT_TERM);
         }
